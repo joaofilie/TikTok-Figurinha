@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TikTok → Figurinhas WhatsApp</title>
+<style>
+  body{font-family:system-ui,sans-serif;margin:0;padding:16px;max-width:560px;margin:auto;background:#fafafa;color:#222}
+  h1{font-size:1.3rem}
+  button,label.btn{display:block;width:100%;padding:14px;margin:10px 0;border:0;border-radius:10px;background:#25d366;color:#fff;font-size:1rem;text-align:center;box-sizing:border-box}
+  button:disabled{background:#aaa}
+  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:12px 0}
+  .grid img{width:100%;aspect-ratio:1;object-fit:contain;background:#eee;border-radius:8px}
+  small,#status{color:#666}
+  ol{padding-left:20px}
+</style>
+</head>
+<body>
+<h1>TikTok → Figurinhas WhatsApp</h1>
+<ol>
+  <li>No TikTok: Configurações → Conta → <b>Baixar seus dados</b> (formato JSON). Baixe e, se vier em ZIP, pode enviar o ZIP direto.</li>
+  <li>Envie o arquivo abaixo.</li>
+  <li>Confira as figurinhas e exporte.</li>
+</ol>
+<small>Tudo roda no seu aparelho; nada é enviado a servidores. Não pedimos sua senha do TikTok.</small>
+
+<label class="btn">Enviar dados do TikTok (.zip/.json) ou imagens
+  <input id="file" type="file" multiple accept=".zip,.json,.txt,image/*" hidden>
+</label>
+<div id="status"></div>
+<div class="grid" id="grid"></div>
+<button id="share" disabled>Compartilhar com WhatsApp / app de figurinhas</button>
+<button id="zip" disabled>Baixar ZIP (.wastickers p/ Android + WebP)</button>
+
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+let stickers = []; // {blob, name}
+const IMG = /\.(png|jpe?g|webp|gif)(\?|$)/i;
+const status = t => $('status').textContent = t;
+
+async function toSticker(src, size = 512) {
+  const bmp = await createImageBitmap(src);
+  const c = document.createElement('canvas'); c.width = c.height = size;
+  const ctx = c.getContext('2d');
+  const s = Math.min(size / bmp.width, size / bmp.height);
+  ctx.drawImage(bmp, (size - bmp.width * s) / 2, (size - bmp.height * s) / 2, bmp.width * s, bmp.height * s);
+  for (const q of [0.9, 0.7, 0.5, 0.3]) { // WhatsApp: <100KB
+    const b = await new Promise(r => c.toBlob(r, 'image/webp', q));
+    if (b && (b.size < 100000 || q === 0.3)) return b;
+  }
+}
+
+async function collect(files) {
+  const sources = [], urls = new Set();
+  for (const f of files) {
+    if (f.name.endsWith('.zip')) {
+      const z = await JSZip.loadAsync(f);
+      for (const e of Object.values(z.files)) {
+        if (e.dir) continue;
+        if (IMG.test(e.name)) sources.push(await e.async('blob'));
+        else if (/\.(json|txt)$/i.test(e.name)) scan(await e.async('string'), urls);
+      }
+    } else if (f.type.startsWith('image/')) sources.push(f);
+    else scan(await f.text(), urls);
+  }
+  let i = 0;
+  for (const u of urls) { // links de imagem achados nos dados
+    status(`Baixando ${++i}/${urls.size}…`);
+    try { const r = await fetch(u); if (r.ok) sources.push(await r.blob()); } catch {} // CORS pode bloquear
+  }
+  return { sources, blocked: urls.size && !sources.length };
+}
+function scan(text, urls) {
+  for (const m of text.matchAll(/https?:\/\/[^\s"'\\<>]+/g)) if (IMG.test(m[0])) urls.add(m[0]);
+}
+
+$('file').onchange = async e => {
+  stickers = []; $('grid').innerHTML = '';
+  status('Lendo…');
+  const { sources, blocked } = await collect([...e.target.files]);
+  let n = 0;
+  for (const s of sources.slice(0, 30)) { // limite do WhatsApp: 30 por pacote
+    try {
+      const blob = await toSticker(s);
+      stickers.push({ blob, name: `sticker_${++n}.webp` });
+      const img = new Image(); img.src = URL.createObjectURL(blob); $('grid').append(img);
+    } catch {}
+  }
+  status(stickers.length ? `${stickers.length} figurinhas prontas.` :
+    blocked ? 'Achei links, mas o TikTok bloqueou o download pelo navegador. Salve as imagens e envie-as diretamente.' :
+    'Não encontrei imagens nesses dados. Envie as imagens/GIFs diretamente.');
+  $('share').disabled = $('zip').disabled = !stickers.length;
+};
+
+async function buildZip() {
+  const z = new JSZip();
+  z.file('title.txt', 'Meus favoritos TikTok'); z.file('author.txt', 'TikTok Figurinha');
+  z.file('tray.png', await (async () => { const bmp = await createImageBitmap(stickers[0].blob);
+    const c = document.createElement('canvas'); c.width = c.height = 96;
+    c.getContext('2d').drawImage(bmp, 0, 0, 96, 96); return new Promise(r => c.toBlob(r, 'image/png')); })());
+  stickers.forEach(s => z.file(s.name, s.blob));
+  return z.generateAsync({ type: 'blob' });
+}
+
+$('zip').onclick = async () => {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(await buildZip()); a.download = 'tiktok.wastickers'; a.click();
+};
+
+$('share').onclick = async () => {
+  const files = stickers.map(s => new File([s.blob], s.name, { type: s.blob.type }));
+  if (navigator.canShare && navigator.canShare({ files })) {
+    try { await navigator.share({ files, title: 'Figurinhas TikTok' }); } catch {}
+  } else status('Seu navegador não suporta compartilhar arquivos. Use o botão do ZIP.');
+};
+</script>
+</body>
+</html>
